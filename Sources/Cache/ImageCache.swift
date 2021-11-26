@@ -171,22 +171,32 @@ open class ImageCache {
     /// - Parameters:
     ///   - memoryStorage: The `MemoryStorage.Backend` object to use in the image cache.
     ///   - diskStorage: The `DiskStorage.Backend` object to use in the image cache.
+    ///   - enableBackgroundClear: Whether auto clear expired disk Cache when enter background.
     public init(
         memoryStorage: MemoryStorage.Backend<KFCrossPlatformImage>,
-        diskStorage: DiskStorage.Backend<Data>)
+        diskStorage: DiskStorage.Backend<Data>,
+        enableBackgroundClear: Bool = true
+    )
     {
         self.memoryStorage = memoryStorage
         self.diskStorage = diskStorage
         let ioQueueName = "com.onevcat.Kingfisher.ImageCache.ioQueue.\(UUID().uuidString)"
         ioQueue = DispatchQueue(label: ioQueueName)
 
-        let notifications: [(Notification.Name, Selector)]
+        var notifications: [(Notification.Name, Selector)]
         #if !os(macOS) && !os(watchOS)
-        notifications = [
-            (UIApplication.didReceiveMemoryWarningNotification, #selector(clearMemoryCache)),
-            (UIApplication.willTerminateNotification, #selector(cleanExpiredDiskCache)),
-            (UIApplication.didEnterBackgroundNotification, #selector(backgroundCleanExpiredDiskCache))
-        ]
+        if enableBackgroundClear {
+            notifications = [
+                (UIApplication.didReceiveMemoryWarningNotification, #selector(clearMemoryCache)),
+                (UIApplication.willTerminateNotification, #selector(cleanExpiredDiskCache)),
+                (UIApplication.didEnterBackgroundNotification, #selector(backgroundCleanExpiredDiskCache))
+            ]
+        } else {
+            notifications = [
+                (UIApplication.didReceiveMemoryWarningNotification, #selector(clearMemoryCache)),
+                (UIApplication.willTerminateNotification, #selector(cleanExpiredDiskCache))
+            ]
+        }
         #elseif os(macOS)
         notifications = [
             (NSApplication.willResignActiveNotification, #selector(cleanExpiredDiskCache)),
@@ -205,8 +215,12 @@ open class ImageCache {
     /// - Parameter name: The name of cache object. It is used to setup disk cache directories and IO queue.
     ///                   You should not use the same `name` for different caches, otherwise, the disk storage would
     ///                   be conflicting to each other. The `name` should not be an empty string.
-    public convenience init(name: String) {
-        self.init(noThrowName: name, cacheDirectoryURL: nil, diskCachePathClosure: nil)
+    public convenience init(
+        name: String,
+        enableBackgroundClear: Bool = true
+    )
+    {
+        self.init(noThrowName: name, cacheDirectoryURL: nil, diskCachePathClosure: nil, enableBackgroundClear: enableBackgroundClear)
     }
 
     /// Creates an `ImageCache` with a given `name`, cache directory `path`
@@ -221,12 +235,14 @@ open class ImageCache {
     ///                        directory under user domain mask will be used.
     ///   - diskCachePathClosure: Closure that takes in an optional initial path string and generates
     ///                           the final disk cache path. You could use it to fully customize your cache path.
+    ///   - enableBackgroundClear: Whether auto clear expired disk Cache when enter background.    ///
     /// - Throws: An error that happens during image cache creating, such as unable to create a directory at the given
     ///           path.
     public convenience init(
         name: String,
         cacheDirectoryURL: URL?,
-        diskCachePathClosure: DiskCachePathClosure? = nil
+        diskCachePathClosure: DiskCachePathClosure? = nil,
+        enableBackgroundClear: Bool = true
     ) throws
     {
         if name.isEmpty {
@@ -239,13 +255,14 @@ open class ImageCache {
             name: name, cacheDirectoryURL: cacheDirectoryURL, diskCachePathClosure: diskCachePathClosure
         )
         let diskStorage = try DiskStorage.Backend<Data>(config: config)
-        self.init(memoryStorage: memoryStorage, diskStorage: diskStorage)
+        self.init(memoryStorage: memoryStorage, diskStorage: diskStorage, enableBackgroundClear: enableBackgroundClear)
     }
 
     convenience init(
         noThrowName name: String,
         cacheDirectoryURL: URL?,
-        diskCachePathClosure: DiskCachePathClosure?
+        diskCachePathClosure: DiskCachePathClosure?,
+        enableBackgroundClear: Bool = true
     )
     {
         if name.isEmpty {
@@ -258,7 +275,7 @@ open class ImageCache {
             name: name, cacheDirectoryURL: cacheDirectoryURL, diskCachePathClosure: diskCachePathClosure
         )
         let diskStorage = DiskStorage.Backend<Data>(noThrowConfig: config, creatingDirectory: true)
-        self.init(memoryStorage: memoryStorage, diskStorage: diskStorage)
+        self.init(memoryStorage: memoryStorage, diskStorage: diskStorage, enableBackgroundClear: enableBackgroundClear)
     }
 
     private static func createMemoryStorage() -> MemoryStorage.Backend<KFCrossPlatformImage> {
