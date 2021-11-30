@@ -299,6 +299,12 @@ public enum DiskStorage {
             }
         }
 
+        func removeAll() throws -> UInt {
+            let size = try totalSize()
+            try config.fileManager.removeItem(at: directoryURL)
+            return size
+        }
+
         /// The URL of the cached file with a given computed `key`.
         ///
         /// - Parameter key: The final computed key used when caching the image. Please note that usually this is not
@@ -378,6 +384,42 @@ public enum DiskStorage {
             return expiredFiles
         }
 
+        /// Removes all expired values from this storage.
+        /// - Throws: A file manager error during removing the file.
+        /// - Returns: The URLs and sizes for removed files.
+        public func removeExpiredValues() throws -> [(URL, UInt)] {
+            return try removeExpiredValues(referenceDate: Date())
+        }
+
+        func removeExpiredValues(referenceDate: Date) throws -> [(URL, UInt)] {
+            let propertyKeys: [URLResourceKey] = [
+                .isDirectoryKey,
+                .fileSizeKey,
+                .contentModificationDateKey
+            ]
+
+            let urls = try allFileURLs(for: propertyKeys)
+            let keys = Set(propertyKeys)
+            
+            var expiredFiles: [(URL, UInt)] = []
+            expiredFiles.reserveCapacity(urls.count)
+            for url in urls {
+                do {
+                    let meta = try FileMeta(fileURL: url, resourceKeys: keys)
+                    if meta.isDirectory {
+                        continue
+                    }
+                    if meta.expired(referenceDate: referenceDate) {
+                        try removeFile(at: url)
+                        expiredFiles.append((url, UInt(meta.fileSize)))
+                    }
+                } catch {
+                    continue
+                }
+            }
+            return expiredFiles
+        }
+
         /// Removes all size exceeded values from this storage.
         /// - Throws: A file manager error during removing the file.
         /// - Returns: The URLs for removed files.
@@ -413,6 +455,49 @@ public enum DiskStorage {
                 size -= UInt(meta.fileSize)
                 try removeFile(at: meta.url)
                 removed.append(meta.url)
+            }
+            return removed
+        }
+
+        /// Removes all size exceeded values from this storage.
+        /// - Throws: A file manager error during removing the file.
+        /// - Returns: The URLs and sizes for removed files.
+        ///
+        /// - Note: This method checks `config.sizeLimit` and remove cached files in an LRU (Least Recently Used) way.
+        func removeSizeExceededValues() throws -> [(URL, UInt)] {
+            if config.sizeLimit == 0 { return [] } // Back compatible. 0 means no limit.
+
+            var size = try totalSize()
+            if size < config.sizeLimit { return [] }
+
+            let propertyKeys: [URLResourceKey] = [
+                .isDirectoryKey,
+                .creationDateKey,
+                .fileSizeKey
+            ]
+            let keys = Set(propertyKeys)
+
+            let urls = try allFileURLs(for: propertyKeys)
+            var pendings: [FileMeta] = urls.compactMap { fileURL in
+                guard let meta = try? FileMeta(fileURL: fileURL, resourceKeys: keys) else {
+                    return nil
+                }
+                return meta
+            }
+            // Sort by last access date. Most recent file first.
+            pendings.sort(by: FileMeta.lastAccessDate)
+
+            var removed: [(URL, UInt)] = []
+            removed.reserveCapacity(pendings.count)
+            let target = config.sizeLimit / 2
+            while size > target, let meta = pendings.popLast() {
+                do {
+                    size -= UInt(meta.fileSize)
+                    try removeFile(at: meta.url)
+                    removed.append((meta.url, UInt(meta.fileSize)))
+                } catch {
+                    continue
+                }
             }
             return removed
         }

@@ -160,7 +160,8 @@ open class ImageCache {
     public let diskStorage: DiskStorage.Backend<Data>
     
     private let ioQueue: DispatchQueue
-    
+    private var notificationTokens: [NSObjectProtocol]
+
     /// Closure that defines the disk cache path from a given path and cacheName.
     public typealias DiskCachePathClosure = (URL, String) -> URL
 
@@ -183,29 +184,27 @@ open class ImageCache {
         let ioQueueName = "com.onevcat.Kingfisher.ImageCache.ioQueue.\(UUID().uuidString)"
         ioQueue = DispatchQueue(label: ioQueueName)
 
-        var notifications: [(Notification.Name, Selector)]
+        notificationTokens = []
+        var notifications: [(name: Notification.Name, handler: () -> Void)]
         #if !os(macOS) && !os(watchOS)
+        notifications = []
+        notifications.reserveCapacity(enableBackgroundClear ? 3 : 2)
+        notifications.append((UIApplication.didReceiveMemoryWarningNotification, { [weak self] in self?.clearMemoryCache() }))
+        notifications.append((UIApplication.willTerminateNotification, { [weak self] in self?.cleanExpiredDiskCache() }))
         if enableBackgroundClear {
-            notifications = [
-                (UIApplication.didReceiveMemoryWarningNotification, #selector(clearMemoryCache)),
-                (UIApplication.willTerminateNotification, #selector(cleanExpiredDiskCache)),
-                (UIApplication.didEnterBackgroundNotification, #selector(backgroundCleanExpiredDiskCache))
-            ]
-        } else {
-            notifications = [
-                (UIApplication.didReceiveMemoryWarningNotification, #selector(clearMemoryCache)),
-                (UIApplication.willTerminateNotification, #selector(cleanExpiredDiskCache))
-            ]
+            notifications.append((UIApplication.didEnterBackgroundNotification, { [weak self] in self?.backgroundCleanExpiredDiskCache() }))
         }
         #elseif os(macOS)
         notifications = [
-            (NSApplication.willResignActiveNotification, #selector(cleanExpiredDiskCache)),
+            (NSApplication.willResignActiveNotification, { [weak self] in self?.cleanExpiredDiskCache() }),
         ]
         #else
         notifications = []
         #endif
-        notifications.forEach {
-            NotificationCenter.default.addObserver(self, selector: $0.1, name: $0.0, object: nil)
+        notificationTokens.reserveCapacity(notifications.count)
+        notifications.forEach { notification in
+            let token = NotificationCenter.default.addObserver(forName: notification.name, object: nil, queue: .main, using: { _ in notification.handler() })
+            notificationTokens.append(token)
         }
     }
     
@@ -304,7 +303,7 @@ open class ImageCache {
     }
     
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        notificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
     // MARK: Storing Images
@@ -665,9 +664,9 @@ open class ImageCache {
         clearMemoryCache()
         clearDiskCache(completion: handler)
     }
-    
+
     /// Clears the memory storage of this cache.
-    @objc public func clearMemoryCache() {
+    public func clearMemoryCache() {
         memoryStorage.removeAll()
     }
     
@@ -678,14 +677,29 @@ open class ImageCache {
     open func clearDiskCache(completion handler: (() -> Void)? = nil) {
         ioQueue.async {
             do {
-                try self.diskStorage.removeAll()
+                let _: Void = try self.diskStorage.removeAll()
             } catch _ { }
             if let handler = handler {
                 DispatchQueue.main.async { handler() }
             }
         }
     }
-    
+
+    /// Clears the disk storage of this cache. This is an async operation.
+    ///
+    /// - Parameter handler: A closure which is invoked when the cache clearing operation finishes.
+    ///                      This `handler` will be called from the main queue.
+    ///                      The `handler` will take a argument as cleared disk size.
+    open func clearDiskCache(completion handler: @escaping (UInt) -> Void) {
+        var size: UInt = 0
+        ioQueue.async {
+            do {
+                size = try self.diskStorage.removeAll()
+            } catch _ { }
+            DispatchQueue.main.async { handler(size) }
+        }
+    }
+
     /// Clears the expired images from memory & disk storage. This is an async operation.
     open func cleanExpiredCache(completion handler: (() -> Void)? = nil) {
         cleanExpiredMemoryCache()
@@ -698,7 +712,7 @@ open class ImageCache {
     }
     
     /// Clears the expired images from disk storage. This is an async operation.
-    @objc func cleanExpiredDiskCache() {
+    func cleanExpiredDiskCache() {
         cleanExpiredDiskCache(completion: nil)
     }
 
@@ -710,10 +724,10 @@ open class ImageCache {
         ioQueue.async {
             do {
                 var removed: [URL] = []
-                let removedExpired = try self.diskStorage.removeExpiredValues()
+                let removedExpired: [URL] = try self.diskStorage.removeExpiredValues()
                 removed.append(contentsOf: removedExpired)
 
-                let removedSizeExceeded = try self.diskStorage.removeSizeExceededValues()
+                let removedSizeExceeded: [URL] = try self.diskStorage.removeSizeExceededValues()
                 removed.append(contentsOf: removedSizeExceeded)
 
                 if !removed.isEmpty {
@@ -733,11 +747,42 @@ open class ImageCache {
         }
     }
 
+    /// Clears the expired images from disk storage. This is an async operation.
+    ///
+    /// - Parameter handler: A closure which is invoked when the cache clearing operation finishes.
+    ///                      This `handler` will be called from the main queue.
+    ///                      The `handler` will take a argument as cleared disk size.
+    open func cleanExpiredDiskCache(completion handler: @escaping ((UInt) -> Void)) {
+        ioQueue.async {
+            do {
+                var removed: [(URL, UInt)] = []
+                let removedExpired: [(URL, UInt)] = try self.diskStorage.removeExpiredValues()
+                removed.append(contentsOf: removedExpired)
+
+                let removedSizeExceeded: [(URL, UInt)] = try self.diskStorage.removeSizeExceededValues()
+                removed.append(contentsOf: removedSizeExceeded)
+
+                if !removed.isEmpty {
+                    DispatchQueue.main.async {
+                        let cleanedHashes = removed.map { $0.0.lastPathComponent }
+                        NotificationCenter.default.post(
+                            name: .KingfisherDidCleanDiskCache,
+                            object: self,
+                            userInfo: [KingfisherDiskCacheCleanedHashKey: cleanedHashes])
+                    }
+                }
+
+                let totalSize = removed.reduce(0) { $0 + $1.1 }
+                DispatchQueue.main.async { handler(totalSize) }
+            } catch {}
+        }
+    }
+
 #if !os(macOS) && !os(watchOS)
     /// Clears the expired images from disk storage when app is in background. This is an async operation.
     /// In most cases, you should not call this method explicitly.
     /// It will be called automatically when `UIApplicationDidEnterBackgroundNotification` received.
-    @objc public func backgroundCleanExpiredDiskCache() {
+    public func backgroundCleanExpiredDiskCache() {
         // if 'sharedApplication()' is unavailable, then return
         guard let sharedApplication = KingfisherWrapper<UIApplication>.shared else { return }
 
