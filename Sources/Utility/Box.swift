@@ -25,10 +25,10 @@
 
 import Foundation
 
-class Box<T> {
-    var value: T
+public class Box<T> {
+    public var value: T
     
-    init(_ value: T) {
+    public init(_ value: T) {
         self.value = value
     }
 }

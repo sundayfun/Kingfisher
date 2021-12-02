@@ -387,11 +387,13 @@ public enum DiskStorage {
         /// Removes all expired values from this storage.
         /// - Throws: A file manager error during removing the file.
         /// - Returns: The URLs and sizes for removed files.
-        public func removeExpiredValues() throws -> [(URL, UInt)] {
-            return try removeExpiredValues(referenceDate: Date())
+        public func removeExpiredValues(stop: Box<Bool>) throws -> [(URL, UInt)] {
+            return try removeExpiredValues(stop: stop, referenceDate: Date())
         }
 
-        func removeExpiredValues(referenceDate: Date) throws -> [(URL, UInt)] {
+        func removeExpiredValues(stop: Box<Bool>, referenceDate: Date) throws -> [(URL, UInt)] {
+            if stop.value { return [] }
+            
             let propertyKeys: [URLResourceKey] = [
                 .isDirectoryKey,
                 .fileSizeKey,
@@ -405,6 +407,9 @@ public enum DiskStorage {
             expiredFiles.reserveCapacity(urls.count)
             for url in urls {
                 do {
+                    if stop.value {
+                        break
+                    }
                     let meta = try FileMeta(fileURL: url, resourceKeys: keys)
                     if meta.isDirectory {
                         continue
@@ -426,7 +431,6 @@ public enum DiskStorage {
         ///
         /// - Note: This method checks `config.sizeLimit` and remove cached files in an LRU (Least Recently Used) way.
         func removeSizeExceededValues() throws -> [URL] {
-
             if config.sizeLimit == 0 { return [] } // Back compatible. 0 means no limit.
 
             var size = try totalSize()
@@ -464,9 +468,11 @@ public enum DiskStorage {
         /// - Returns: The URLs and sizes for removed files.
         ///
         /// - Note: This method checks `config.sizeLimit` and remove cached files in an LRU (Least Recently Used) way.
-        func removeSizeExceededValues() throws -> [(URL, UInt)] {
-            if config.sizeLimit == 0 { return [] } // Back compatible. 0 means no limit.
-
+        func removeSizeExceededValues(stop: Box<Bool>) throws -> [(URL, UInt)] {
+            if stop.value { return [] }
+            
+            if config.sizeLimit == 0 { return [] } // Back compatible. 0 means no limit
+            
             var size = try totalSize()
             if size < config.sizeLimit { return [] }
 
@@ -479,6 +485,10 @@ public enum DiskStorage {
 
             let urls = try allFileURLs(for: propertyKeys)
             var pendings: [FileMeta] = urls.compactMap { fileURL in
+                if stop.value {
+                    return nil
+                }
+                
                 guard let meta = try? FileMeta(fileURL: fileURL, resourceKeys: keys) else {
                     return nil
                 }
@@ -492,6 +502,8 @@ public enum DiskStorage {
             let target = config.sizeLimit / 2
             while size > target, let meta = pendings.popLast() {
                 do {
+                    if stop.value { break }
+                    
                     size -= UInt(meta.fileSize)
                     try removeFile(at: meta.url)
                     removed.append((meta.url, UInt(meta.fileSize)))

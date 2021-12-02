@@ -752,14 +752,14 @@ open class ImageCache {
     /// - Parameter handler: A closure which is invoked when the cache clearing operation finishes.
     ///                      This `handler` will be called from the main queue.
     ///                      The `handler` will take a argument as cleared disk size.
-    open func cleanExpiredDiskCache(completion handler: @escaping ((UInt) -> Void)) {
+    open func cleanExpiredDiskCache(stop: Box<Bool>, completion handler: @escaping ((UInt) -> Void)) {
         ioQueue.async {
             do {
                 var removed: [(URL, UInt)] = []
-                let removedExpired: [(URL, UInt)] = try self.diskStorage.removeExpiredValues()
+                let removedExpired: [(URL, UInt)] = try self.diskStorage.removeExpiredValues(stop: stop)
                 removed.append(contentsOf: removedExpired)
 
-                let removedSizeExceeded: [(URL, UInt)] = try self.diskStorage.removeSizeExceededValues()
+                let removedSizeExceeded: [(URL, UInt)] = try self.diskStorage.removeSizeExceededValues(stop: stop)
                 removed.append(contentsOf: removedSizeExceeded)
 
                 if !removed.isEmpty {
