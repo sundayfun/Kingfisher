@@ -299,9 +299,12 @@ public enum DiskStorage {
             }
         }
 
-        func removeAll() throws -> UInt {
+        func removeAll(keepDirectory: Bool) throws -> UInt {
             let size = try totalSize()
             try config.fileManager.removeItem(at: directoryURL)
+            if keepDirectory {
+                try prepareDirectory()
+            }
             return size
         }
 

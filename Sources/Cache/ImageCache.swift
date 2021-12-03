@@ -694,7 +694,7 @@ open class ImageCache {
         var size: UInt = 0
         ioQueue.async {
             do {
-                size = try self.diskStorage.removeAll()
+                size = try self.diskStorage.removeAll(keepDirectory: true)
             } catch _ { }
             DispatchQueue.main.async { handler(size) }
         }
